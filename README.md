@@ -6,17 +6,19 @@
 
 ## 安装
 
+本技能为通用技能，不绑定特定 AI 平台。只需将 `SKILL.md` 放置到对应平台的技能目录下即可生效。
+
 ```bash
-# 方式一：克隆到 Qoder 技能目录
-cd ~/.qoder/skills
+# 克隆仓库
 git clone https://github.com/topmachinegun/hap-app-access.git
 
-# 方式二：手动放置
-mkdir -p ~/.qoder/skills/hap-app-access
-curl -o ~/.qoder/skills/hap-app-access/SKILL.md https://raw.githubusercontent.com/topmachinegun/hap-app-access/main/SKILL.md
+# 将 SKILL.md 复制到你使用的 AI 平台的技能目录
+# 例如 Qoder:  cp SKILL.md ~/.qoder/skills/hap-app-access/SKILL.md
+# 例如 Cursor: cp SKILL.md ~/.cursor/skills/hap-app-access/SKILL.md
+# 其他平台请参考对应文档
 ```
 
-安装后 Qoder 自动识别技能，无需额外配置。
+各平台会自动识别 SKILL.md 格式的技能文件，无需额外配置。
 
 ## 技能结构
 

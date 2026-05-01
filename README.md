@@ -9,11 +9,11 @@
 ```bash
 # 方式一：克隆到 Qoder 技能目录
 cd ~/.qoder/skills
-git clone https://github.com/garfield-bb/hap-app-access.git
+git clone https://github.com/topmachinegun/hap-app-access.git
 
 # 方式二：手动放置
 mkdir -p ~/.qoder/skills/hap-app-access
-curl -o ~/.qoder/skills/hap-app-access/SKILL.md https://raw.githubusercontent.com/garfield-bb/hap-app-access/main/SKILL.md
+curl -o ~/.qoder/skills/hap-app-access/SKILL.md https://raw.githubusercontent.com/topmachinegun/hap-app-access/main/SKILL.md
 ```
 
 安装后 Qoder 自动识别技能，无需额外配置。

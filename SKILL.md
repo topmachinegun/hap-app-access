@@ -377,6 +377,63 @@ curl -X POST "https://api2.mingdao.com/mcp?Authorization=Bearer%20<Token>" \
 
 ---
 
+### 5.9 Token 自动化管理脚本（`scripts/mcp_token.py`）
+
+本仓库 `scripts/mcp_token.py` 是个人级 OAuth Token 的**透明管理器**，供下游 skill（如 `crm-project-review`）和业务脚本复用。它解决三个痛点：
+
+1. **token 1 天过期**但不该让 Agent / 用户每次手动刷新
+2. **密码不能进对话**（见 hap-oauth-mcp §Token 生命周期）——脚本从 env 读凭证，Agent 只看到一个 URL输出
+3. 下游脚本不应该重复实现「调 md-generate → 缓存 → 判过期」逻辑
+
+#### 用法
+
+```bash
+# 一次性写进 shell profile (~/.zshrc / ~/.bashrc)
+export MINGDAO_ACCOUNT='13800138000'      # 11 位手机号会自动补 +86；email 原样
+export MINGDAO_PASSWORD='your_password'
+# export MINGDAO_OAUTH_APP_ID='...'         # 可选；默认 ClawCRM SaaS 官方
+export HAP_APP_ACCESS_DIR=~/Desktop/hap-app-access  # 可选；脚本默认探测几个常见路径
+
+# CLI
+python3 $HAP_APP_ACCESS_DIR/scripts/mcp_token.py            # 打印当前有效 URL（必要时自动刷新）
+python3 $HAP_APP_ACCESS_DIR/scripts/mcp_token.py --refresh  # 强制刷新
+python3 $HAP_APP_ACCESS_DIR/scripts/mcp_token.py --status   # 查看缓存状态（脱敏）
+```
+
+#### 下游 Python 调用
+
+**推荐 subprocess 零耦合（跨 skill 不依赖 sys.path / pip install）**：
+
+```python
+import os, subprocess, sys
+from pathlib import Path
+
+hap_dir = os.environ.get("HAP_APP_ACCESS_DIR") or str(Path.home() / "Desktop/hap-app-access")
+url = subprocess.check_output([sys.executable, f"{hap_dir}/scripts/mcp_token.py"], text=True).strip()
+# 使用 url 调 MCP。脚本保证返回的 URL 已 URL-encode（Bearer 后面的空格是 %20）
+```
+
+#### 设计要点
+
+| 属性 | 值 |
+|---|---|
+| 凭证来源 | env `MINGDAO_ACCOUNT` / `MINGDAO_PASSWORD` / `MINGDAO_OAUTH_APP_ID`（默认 ClawCRM）|
+| 缓存路径 | env `HAP_MCP_CACHE_DIR` 覆盖 > `~/.cache/hap-mcp/token.json` > `/tmp/hap-mcp/token.json`（sandbox 受限自动回退）|
+| 过期阈值 | fetched_at + 23h（留 1h buffer，token 实际寿命 ~24h）|
+| 刷新后端 | 调 `~/.qoder/skills/hap-oauth-mcp/.venv/bin/md-generate-mcp-config`（必需先安装 hap-oauth-mcp skill）|
+| 手机号处理 | 11 位以 1 开头的纯数字自动补 `+86` 前缀（md-generate 要求 E.164）|
+| URL encode | `Bearer ` 空格自动转 `Bearer%20`（避免 Python urllib InvalidURL）|
+| 失败脱敏 | 报错不含密码/token，stderr 只走 `MCPCredentialError`提示仓 |
+
+#### 与 hap-oauth-mcp 的边界
+
+- **hap-oauth-mcp**：负责“一次性 OAuth 授权 + 首次生成 MCP JSON”，文档面向人（用户手动跑）
+- **本脚本**：负责“复用凭证、缓存 token、过期自动刷新”，面向代码（下游脚本调用）
+
+两者互补：用户首次跑 `md-generate-mcp-config` 完成授权后，后续所有下游脚本都走 mcp_token 透明获取，再也不需要 Agent 介入凭证流转。
+
+---
+
 ## 6. API Host（产品线）
 
 HAP 支持多个产品线和私有部署，**API Host 不同**：

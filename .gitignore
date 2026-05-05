@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# 敏感（防止误提交 token 缓存）
+*.env
+*.pem
+*secret*
+token.json
+HAP_MCP_URL*

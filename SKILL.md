@@ -678,6 +678,39 @@ get_worksheet_structure(worksheet_id=ws["worksheetId"], appId=...)
 
 **规则**：用上游返回值填下游参数时，**取值不取 key**；key 名准以下游工具的 schema。
 
+### 8.16 MDAccountLogin 「服务异常」≠ 服务端故障
+
+调 `md-generate-mcp-config` / MDAccountLogin 接口刷新 token 时，常见返回：
+
+```json
+{"state": 0, "exception": "服务异常"}
+```
+
+**关键认知**：这是明道云反刷库的**统一脱敏响应**，服务端不会告诉调用方具体失败原因。误读成「服务端挂了」是最常见的方向性误判。
+
+**真实原因概率降序**：
+
+| # | 原因 | 诊断方法 |
+|---|---|---|
+| 1 | 账号不存在 / 拼错（包括 Agent 瞎编手机号） | 检查 env `MINGDAO_ACCOUNT` 实际值；之后去 `https://www.mingdao.com` 手工登录验证 |
+| 2 | 密码错 | 同上，手工登录验证 |
+| 3 | 账号被风控 / 异地登录锁定 | 手工登录会提示验证码 / 短信验证 |
+| 4 | OAuth App 被管理员撤销 | 手工登录正常 + 其他账号跳 `md-generate-mcp-config` 也报同样错 |
+| 5 | 服务端真挂（罕见） | `curl -I https://www.mingdao.com` + `https://api.mingdao.com` 都超时才可能 |
+
+**正确诊断顺序**：
+
+1. 先查 env：`echo $MINGDAO_ACCOUNT` 确认手机号/邮箱拼写无误
+2. 再手工验证：浏览器打开 `https://www.mingdao.com` 用同一账密登录
+3. 最后才怀疑服务端：确认 `https://api.mingdao.com` 可达 + 其他环境/同事也不能登
+
+**反模式清单**（Agent 避免）：
+
+- ❌ 给看到 `服务异常` 就往「密码你应该及时更改了」「服务器挂了」上猜（概率最低但偶尔最先被猜）
+- ❌ env 里没 `MINGDAO_ACCOUNT` 就**瞎编**一个手机号试（历史现场： Agent 把 `13910851019` 当成真账号去登，然后报「服务异常」就甩锅给服务端）
+- ❌ 要求用户把密码 / Bearer Token 粘到对话里（违反凭证不进对话原则，见 hap-oauth-mcp §Token 生命周期）
+- ✅ 正确做法：env 缺失就 fail-fast 提示「请设置 MINGDAO_ACCOUNT / MINGDAO_PASSWORD 或调 hap-app-access/scripts/mcp_token.py」，**绝不代用户凑凭证**
+
 ---
 
 ## 9. 错误码速查

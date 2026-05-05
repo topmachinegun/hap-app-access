@@ -432,6 +432,117 @@ url = subprocess.check_output([sys.executable, f"{hap_dir}/scripts/mcp_token.py"
 
 两者互补：用户首次跑 `md-generate-mcp-config` 完成授权后，后续所有下游脚本都走 mcp_token 透明获取，再也不需要 Agent 介入凭证流转。
 
+> **⚠️ v1.2 之后的生产推荐方式是§5.10 的 Token Broker 中控服务。** 本节 `mcp_token.py` 仅保留为单机/开发时期工具，不再推荐在服务器上被下游 skill 直接依赖。
+
+---
+
+### 5.10 Token Broker 中控服务（生产推荐，Linux systemd）
+
+在多业务方共享同一台服务器（如 152 上同时跑日志同步、OpenClaw、其他 Agent）的场景下，用 **Token Broker 守护进程统一管理刷新**，所有消费方走文件读 / CLI 封装。相比 §5.9 每次调 `mcp_token.py` 的模式，收益：
+
+- **去掉每次 subprocess 开销**（完整一次 md-generate 要 3–5s）
+- 刷新逻辑单点，并发 N 个日志作业不会雪崩重复刷新
+- 失败连续 N 次自动告警（journal + 可扩展 webhook）
+- 密码/OAuth App ID 只落在 `~/.config/hap-token-broker/config.toml`（mode 600），不再散在各业务库的 `.env`
+
+#### 架构
+
+```
+        config.toml (account/password/oauth_app_id)
+                ↓
+        hap-token-broker.service (systemd)
+          → 定时巡检 / 收到 SIGUSR1 立刻刷新
+          → 调 md-generate-mcp-config
+          → 原子写 ~/.local/share/hap-token-broker/tokens/<profile>.json
+          → 可选 mirror 到 ~/.cache/hap-mcp/token.json（兼容老脚本）
+                ↓
+  消费方：
+    (a) hap-token get claw-crm                 # CLI，纯 stdout
+    (b) 直读 tokens/<profile>.json 的 url 字段    # 无 subprocess 开销
+    (c) 老脚本继续读 ~/.cache/hap-mcp/token.json  # mirror 透明兼容
+```
+
+#### 部署（Ubuntu 22.04+ / Python 3.11+）
+
+```bash
+# 1. 拉仓库
+git clone https://github.com/vmcoen/hap-app-access.git /opt/hap-app-access
+cd /opt/hap-app-access
+
+# 2. 一键安装（生成 service、建目录、建 symlink、systemctl enable --now）
+sudo bash install.sh
+
+# 3. 编辑配置，填真实凭据
+sudo -e /root/.config/hap-token-broker/config.toml
+#   account        = "15801477125"          # 11 位手机号自动补 +86
+#   password       = "xxxxxxxx"
+#   oauth_app_id   = "xxxxxxxxxxxxxxxxxxxx"
+#   [mirror_to_legacy]                       # 可选：让 mcp_token.py 零改动受益
+#   claw-crm = "~/.cache/hap-mcp/token.json"
+
+# 4. 重启 daemon，验证第一轮刷新
+sudo bash install.sh --restart
+journalctl -u hap-token-broker -n 30 --no-pager
+hap-token status
+hap-token get claw-crm | head -c 60; echo
+```
+
+#### 配置详解（config.toml）
+
+| 项 | 语义 | 默认 |
+|---|---|---|
+| `check_interval_minutes` | 巡检间隔 | 30 |
+| `refresh_before_expire_hours` | 距过期 <= 此值触发刷新 | 4.0 |
+| `max_consecutive_failures` | 连续失败 N 次告警（仅一次） | 5 |
+| `md_generate_bin` | md-generate-mcp-config 绝对路径 | `~/.qoder/skills/hap-oauth-mcp/.venv/bin/md-generate-mcp-config` |
+| `[profiles.<name>]` | 一个账号+一个 OAuth App = 一个 profile，支持多 profile 共存 | 必填 |
+| `[mirror_to_legacy]` | profile → 老路径的镜像映射（兼容 `mcp_token.py` 读者） | 可选 |
+
+#### 消费方接入（三种姿势）
+
+**A. CLI 默认方式（shell / make / CI）**
+```bash
+URL=$(hap-token get claw-crm --check) || { echo "token 已过期"; exit 2; }
+```
+
+**B. Python 直读文件（最低延迟，推荐给 review_project.py、数据同步等高频脚本）**
+```python
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+TOKEN = Path.home() / ".local/share/hap-token-broker/tokens/claw-crm.json"
+rec = json.loads(TOKEN.read_text(encoding="utf-8"))
+exp = datetime.fromisoformat(rec["expires_at"].replace("Z", "+00:00"))
+if datetime.now(timezone.utc) >= exp:
+    raise SystemExit("broker token 过期，请检查：hap-token status / journalctl -u hap-token-broker")
+url = rec["url"]  # 已 URL-encode，可直接用于 MCP SSE
+```
+
+**C. 老脚本零改动（过渡期兜底）**
+开启 `[mirror_to_legacy]`，broker 会额外写老 schema `{url, fetched_at, expires_at}` 到 `~/.cache/hap-mcp/token.json`。老脚本继续调 `mcp_token.py` 也会命中缓存。
+
+#### 运维命令备忘
+
+```bash
+systemctl status hap-token-broker             # 状态
+systemctl restart hap-token-broker            # 重启（改 config 后）
+journalctl -u hap-token-broker -f             # 实时日志
+journalctl -u hap-token-broker --since '-1h'  # 近 1 小时
+systemctl kill -s SIGUSR1 hap-token-broker    # 立刻触发刷新
+# 或：hap-token refresh claw-crm
+hap-token list                                # 所有 profile + 剩余时长
+hap-token path claw-crm                       # 打印 token 文件路径
+sudo bash install.sh --uninstall              # 卸载（保留配置，不删 token 目录）
+```
+
+#### 限制 / 反模式
+
+- 不要在配置以外的任何地方写密码。下游 skill 若发现它获不到 token——**不应**尝试自己调 `md-generate-mcp-config` 手动刷新；正确做法是 报错终止并提示运维检查 broker
+- 突发开发场景需要临时新账号，再加一个 `[profiles.foo]`，**不要** 改现有 profile 的账号密码
+- 不要把 `config.toml` / `tokens/*.json` / `/etc/systemd/system/hap-token-broker.service` 提交到任何仓库（`.gitignore` 已拦截）
+- 152 上的日志 tail 请先 `journalctl -u hap-token-broker`，不要去 `/var/log/` 找（默认走 journal）
+
 ---
 
 ## 6. API Host（产品线）

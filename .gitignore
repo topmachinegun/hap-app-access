@@ -17,3 +17,11 @@ Thumbs.db
 *secret*
 token.json
 HAP_MCP_URL*
+
+# Broker runtime artifacts（不应进库；只保留 *.template）
+config.toml
+tokens/
+*.service
+!systemd/*.service.template
+*.plist
+!launchd/*.plist.template

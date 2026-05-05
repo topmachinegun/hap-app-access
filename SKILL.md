@@ -466,7 +466,7 @@ url = subprocess.check_output([sys.executable, f"{hap_dir}/scripts/mcp_token.py"
 
 ```bash
 # 1. 拉仓库
-git clone https://github.com/vmcoen/hap-app-access.git /opt/hap-app-access
+git clone https://github.com/topmachinegun/hap-app-access.git /opt/hap-app-access
 cd /opt/hap-app-access
 
 # 2. 一键安装（生成 service、建目录、建 symlink、systemctl enable --now）

@@ -1,6 +1,6 @@
 [Unit]
 Description=HAP Personal MCP Token Broker
-Documentation=https://github.com/vmcoen/hap-app-access
+Documentation=https://github.com/topmachinegun/hap-app-access
 After=network-online.target
 Wants=network-online.target
 

@@ -432,7 +432,7 @@ url = subprocess.check_output([sys.executable, f"{hap_dir}/scripts/mcp_token.py"
 
 两者互补：用户首次跑 `md-generate-mcp-config` 完成授权后，后续所有下游脚本都走 mcp_token 透明获取，再也不需要 Agent 介入凭证流转。
 
-> **⚠️ v1.2 之后的生产推荐方式是§5.10 的 Token Broker 中控服务。** 本节 `mcp_token.py` 仅保留为单机/开发时期工具，不再推荐在服务器上被下游 skill 直接依赖。
+> **⚠️ v1.2 之后的生产推荐方式是 §5.10 的 Token Broker 中控服务；v1.6 之后业务 skill 的生产推荐接入方式是 §5.12 的 `hap-access` CLI（封装 Personal MCP / App MCP / V3 API 三种 mode）。** 本节 `mcp_token.py` 仅保留为单机/开发时期工具，不再推荐在服务器上被下游 skill 直接依赖。
 
 ---
 
@@ -542,6 +542,182 @@ sudo bash install.sh --uninstall              # 卸载（保留配置，不删 t
 - 突发开发场景需要临时新账号，再加一个 `[profiles.foo]`，**不要** 改现有 profile 的账号密码
 - 不要把 `config.toml` / `tokens/*.json` / `/etc/systemd/system/hap-token-broker.service` 提交到任何仓库（`.gitignore` 已拦截）
 - 152 上的日志 tail 请先 `journalctl -u hap-token-broker`，不要去 `/var/log/` 找（默认走 journal）
+
+---
+
+### 5.11 Access Profile（业务 skill 的凭据单一事实源，v1.6+）
+
+`hap-app-access` 从 v1.6 起为下游业务 skill 提供**统一 profile 规范**。业务 skill（如 `crm-project-review`）**不再自己管凭据** —— 它们只声明「用哪个 profile」，具体走 Personal MCP / 应用级 MCP / V3 API 由 profile 决定，传输层细节完全封装在本 skill 的 `hap-access` CLI 里（见 §5.12）。
+
+#### 文件位置与权限
+
+```
+~/.local/share/hap-app-access/profiles/<name>.json       # 默认根目录（可用 env HAP_PROFILE_DIR 覆盖整个根）
+```
+
+- 权限：**必须 0600**（否则 `hap-access` 拒绝加载）
+- 不提交 git；不出现在对话里；不被 Agent 复述
+- 多 profile 并存：`claw-crm.json` / `orders.json` / `dev-test.json` 等
+- 仅 `HAP_PROFILE_DIR` 支持 env 覆盖；**单字段不支持 env 覆盖**（避免悬空耦合）
+
+#### Schema（按 mode 分）
+
+**mode = `personal_mcp`**（Personal OAuth，走 MCP 协议）：
+```json
+{
+  "mode": "personal_mcp",
+  "app_id": "49392ae2-6aa0-4d69-b5e7-57d4fe3fc98e",
+  "ai_description": "ClawCRM Project Review Agent",
+  "token_source": "broker:claw-crm",
+  "api_base": "https://api2.mingdao.com"
+}
+```
+- `token_source` 两种写法：`broker:<profile>`（从 §5.10 broker 文件读 url）或 `url:<完整 MCP URL>`（用 `HAP_MCP_URL` 风格直传）
+- `app_id` + `ai_description` 会被 CLI 在每次 `tools/call` 时自动注入；业务 skill 不传
+
+**mode = `app_mcp`**（应用级 Appkey+Sign，走 MCP 协议）：
+```json
+{
+  "mode": "app_mcp",
+  "appkey": "<应用 AppKey>",
+  "sign": "<应用 Sign>",
+  "api_base": "https://api.mingdao.com"
+}
+```
+- CLI 会自拼 `https://api.mingdao.com/mcp?HAP-Appkey=...&HAP-Sign=...`；无需 `appId` / `ai_description`
+- 也可显式提供 `mcp_url` 字段覆盖自拼逻辑
+
+**mode = `v3_api`**（应用级 Appkey+Sign，走 V3 REST API）：
+```json
+{
+  "mode": "v3_api",
+  "appkey": "<应用 AppKey>",
+  "sign": "<应用 Sign>",
+  "api_base": "https://api.mingdao.com"
+}
+```
+- 业务 skill 传 MCP 风格工具名（如 `update_record`），CLI 内部按映射表翻到 `/v3/open/worksheet/editRow`，并吸收 `fields=[{id,value}]` → `controls=[{controlId,value}]` 字段差异（详见 §4.3）
+- 无法映射的工具（典型：`knowledge_search`）会直接报 `UnsupportedTool`
+
+#### 初始化与校验
+
+```bash
+# 从 §5.10 broker 已有账号生成：
+hap-access profile --init claw-crm --mode personal_mcp --token-source broker:claw-crm \
+  --app-id 49392ae2-6aa0-4d69-b5e7-57d4fe3fc98e --ai-description "ClawCRM Review"
+
+# 或手写 JSON 后校验（schema + 0600 权限）：
+hap-access profile --validate claw-crm
+
+# 列出所有 profile（脱敏显示）：
+hap-access profile --list
+hap-access profile --show claw-crm     # appkey/sign/mcp_url 字段自动脱敏
+```
+
+#### 业务 skill 侧的使用契约
+
+- **只声明 profile 名**（默认 + env override）：业务 skill 脚本接收 `--profile <name>` 参数，env `HAP_ACCESS_PROFILE` 覆盖默认值
+- **不传传输层参数**：不传 `--mcp-url` / `--appkey` / `--sign` / `--api-base` / `--auth-channel`
+- **不传 MCP 注入字段**：不传 `appId` / `ai_description`（personal_mcp 由 CLI 注入；app_mcp / v3_api 不需要）
+- **换 mode 零代码修改**：同一业务 skill 换一个 profile 就能从 Personal MCP 无缝切到应用级 MCP / V3 API（前提是所用工具在目标 mode 下可映射）
+
+---
+
+### 5.12 `hap-access` CLI（业务 skill 的统一入口，v1.6+）
+
+`scripts/hap-access` 是本 skill 提供的**跨 mode 统一命令行**。业务 skill 用 subprocess 调它，不再自己实现 MCP / V3 的传输层。
+
+#### 可执行文件定位（业务 skill 标准顺序）
+
+1. env `HAP_ACCESS_BIN`
+2. `$PATH` 里的 `hap-access`
+3. `~/Desktop/hap-app-access/scripts/hap-access`（开发环境常见位置）
+4. `/opt/hap-app-access/scripts/hap-access`（`install.sh` 安装位置）
+
+> 业务 skill 应在启动时做一次探测，失败直接 fail-fast，提示用户安装 hap-app-access。
+
+#### 子命令
+
+**`hap-access call`** —— 调一个工具，返回剥壳后的 `data`：
+```bash
+hap-access call --profile claw-crm --tool get_record_list \
+  --args '{"worksheet_id":"...","pageSize":20,"pageIndex":1,"search":"华北油田"}'
+```
+
+**`hap-access list-tools`** —— 拉当前 profile 能访问的工具名列表：
+```bash
+hap-access list-tools --profile claw-crm
+```
+
+**`hap-access profile`** —— profile 管理（见 §5.11）：
+```bash
+hap-access profile --list                    # 列所有（脱敏）
+hap-access profile --show <name>              # 看详情（appkey/sign 脱敏）
+hap-access profile --validate <name>          # schema + 权限校验
+hap-access profile --init <name> --mode ...   # 交互式创建
+```
+
+#### 统一输出契约（stdout 单行 JSON）
+
+所有子命令输出**同一 shape**，便于下游 subprocess 解析：
+
+```json
+{
+  "ok": true,
+  "mode": "personal_mcp",
+  "data": {},
+  "error": "<失败时的错误消息>",
+  "diagnostics": ["[tool] msg1", "..."]
+}
+```
+
+- `ok=true` 时 `data` 有意义；`ok=false` 时 `error` 有意义
+- `diagnostics` 是非致命告警（如 `error_code != 0 但已返回 data`），业务 skill 应合并到自己的 diagnostics 里
+- 退出码：`0` 成功，`!=0` 失败（配合 `ok=false`）
+- **stderr 不参与契约**（仅供人类 debug）
+
+#### Python subprocess 封装模板（推荐业务 skill 照抄）
+
+```python
+import json, os, shutil, subprocess
+from pathlib import Path
+
+class HapCallError(RuntimeError): pass
+
+def resolve_hap_access_bin() -> str:
+    if os.environ.get("HAP_ACCESS_BIN"):
+        return os.environ["HAP_ACCESS_BIN"]
+    on_path = shutil.which("hap-access")
+    if on_path: return on_path
+    for cand in (
+        Path.home()/"Desktop/hap-app-access/scripts/hap-access",
+        Path("/opt/hap-app-access/scripts/hap-access"),
+    ):
+        if cand.exists(): return str(cand)
+    raise HapCallError("hap-access CLI 未找到；请安装 hap-app-access skill")
+
+def hap_call(profile: str, tool: str, args: dict):
+    bin_ = resolve_hap_access_bin()
+    proc = subprocess.run(
+        [bin_, "call", "--profile", profile, "--tool", tool,
+         "--args", json.dumps(args, ensure_ascii=False)],
+        capture_output=True, text=True, timeout=120,
+    )
+    payload = json.loads(proc.stdout) if proc.stdout else {}
+    if not payload.get("ok"):
+        raise HapCallError(payload.get("error") or proc.stderr)
+    return payload.get("data")
+```
+
+参考实现：`crm-project-review/scripts/review_project.py` 的 `hap_call()` / `hap_list_tools()`（v0.3.0 起全面走此模式）。
+
+#### 和其他 skill 的边界
+
+| 层级 | 谁管 | 怎么接入 |
+|---|---|---|
+| OAuth 授权 + token 刷新 | `hap-oauth-mcp` + §5.10 Token Broker（守护进程） | 运维一次性部署 |
+| Profile 规范 + 三种 mode 传输层 + 工具名映射 | **本 skill 的 `hap-access` CLI（§5.11 / §5.12）** | 业务 skill subprocess 调用 |
+| 业务工作流（拉日志 / 打 Rubric / 写回） | 业务 skill（如 `crm-project-review`） | 自己实现，但**不碰传输层** |
 
 ---
 
@@ -904,5 +1080,7 @@ get_worksheet_structure(worksheet_id=ws["worksheetId"], appId=...)
 
 ---
 
-**技能版本**：v1.5
+**技能版本**：v1.6
 **适用范围**：明道云 HAP（SaaS / Nocoly / 私有部署）
+
+**v1.6 变更**：新增 §5.11 Access Profile + §5.12 `hap-access` CLI，提供业务 skill 统一接入规范。业务 skill 从 v1.6 起应走 CLI 封装，不再自实现传输层（参考 `crm-project-review` v0.3.0）。

@@ -25,3 +25,6 @@ tokens/
 !systemd/*.service.template
 *.plist
 !launchd/*.plist.template
+
+# 临时工作产物
+.tmp/

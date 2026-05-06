@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""hap-access 可执行壳。通过 install.sh 会 symlink 到 ~/.local/bin/hap-access。"""
+import sys
+from pathlib import Path
+
+# 允许本文件被直接执行（开发场景），自动把 scripts/ 加入 path
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from hap_access.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

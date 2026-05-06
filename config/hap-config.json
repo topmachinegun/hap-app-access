@@ -1,0 +1,40 @@
+{
+  "_readme": "hap-app-access 统一配置文件。凭据字段留空表示待填写；token/apps 可由智能体运行时自动维护。",
+
+  "personal_mcp": {
+    "api_base": "https://api2.mingdao.com",
+    "token": {
+      "account": "",
+      "password": "",
+      "current_token": "",
+      "expires_at": ""
+    },
+    "apps": [
+      {
+        "org_name": "MH & MD",
+        "org_id": "fe288386-3d26-4eab-b5d2-51eeab82a7f9",
+        "app_name": "产品管理",
+        "app_id": "5129348b-516c-4b9d-9541-24a723cd233b"
+      },
+      {
+        "org_name": "明道云数字化企业",
+        "org_id": "b41664bf-18ae-40c0-a68a-7d5f206c77f3",
+        "app_name": "ClawCRM",
+        "app_id": "49392ae2-6aa0-4d69-b5e7-57d4fe3fc98e"
+      }
+    ]
+  },
+
+  "app_mcp": {
+    "api_base": "https://api.mingdao.com",
+    "apps": [
+      {
+        "org_name": "明道云数字化企业",
+        "app_name": "ClawCRM",
+        "app_id": "49392ae2-6aa0-4d69-b5e7-57d4fe3fc98e",
+        "appkey": "",
+        "sign": ""
+      }
+    ]
+  }
+}

@@ -21,6 +21,7 @@ import sys
 from typing import Any
 
 from . import profile as profile_mod
+from . import config_loader
 from .api_client import HapApiClient, UnsupportedTool
 from .mcp_client import MCPClient
 from .profile import ProfileError
@@ -51,9 +52,20 @@ def _make_client(prof: dict[str, Any]):
     raise ProfileError(f"未知 mode={mode}")
 
 
+
+
+def _load_prof(args) -> dict:
+    """从 --app 或 --profile 加载 profile dict。"""
+    if getattr(args, "app", None):
+        try:
+            return config_loader.resolve_app(args.app)
+        except (LookupError, FileNotFoundError) as e:
+            raise ProfileError(str(e))
+    return profile_mod.load(args.profile)
+
 def cmd_call(args: argparse.Namespace) -> int:
     try:
-        prof = profile_mod.load(args.profile)
+        prof = _load_prof(args)
     except ProfileError as e:
         return _fail("unknown", str(e), code=2)
     try:
@@ -72,7 +84,7 @@ def cmd_call(args: argparse.Namespace) -> int:
 
 def cmd_list_tools(args: argparse.Namespace) -> int:
     try:
-        prof = profile_mod.load(args.profile)
+        prof = _load_prof(args)
     except ProfileError as e:
         return _fail("unknown", str(e), code=2)
     cli = _make_client(prof)
@@ -150,20 +162,49 @@ def _profile_init_wizard() -> int:
     return 0
 
 
+
+def cmd_config(args: argparse.Namespace) -> int:
+    try:
+        cfg = config_loader.load_config()
+    except FileNotFoundError as e:
+        return _fail("config", str(e), code=2)
+    if args.list_apps:
+        apps = config_loader.list_apps()
+        print(json.dumps({"ok": True, "apps": apps}, ensure_ascii=False, indent=2))
+        return 0
+    if args.show:
+        # 脱敏
+        out = json.loads(json.dumps(cfg))
+        token_block = out.get("personal_mcp", {}).get("token", {})
+        for k in ("password", "current_token"):
+            if token_block.get(k):
+                token_block[k] = "***"
+        for app in out.get("app_mcp", {}).get("apps", []):
+            for k in ("appkey", "sign"):
+                if app.get(k):
+                    app[k] = "***"
+        print(json.dumps({"ok": True, "config": out}, ensure_ascii=False, indent=2))
+        return 0
+    print("ERROR: 至少提供 --list-apps 或 --show", file=sys.stderr)
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hap-access",
                                 description="HAP 应用通用访问 CLI（hap-app-access v0.3.0）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("call", help="调业务工具")
-    c.add_argument("--profile", required=True)
+    c.add_argument("--profile", default=None, help="传统 profile 名称")
+    c.add_argument("--app", default=None, help="从统一配置按应用名称解析")
     c.add_argument("--tool", required=True)
     c.add_argument("--args", default="{}",
                    help='业务参数 JSON，如 \'{"query":"..."}\'（默认 {}）')
     c.set_defaults(func=cmd_call)
 
     lt = sub.add_parser("list-tools", help="列出可用工具")
-    lt.add_argument("--profile", required=True)
+    lt.add_argument("--profile", default=None, help="传统 profile 名称")
+    lt.add_argument("--app", default=None, help="从统一配置按应用名称解析")
     lt.set_defaults(func=cmd_list_tools)
 
     pr = sub.add_parser("profile", help="profile 管理")
@@ -172,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--validate", metavar="NAME")
     pr.add_argument("--init", action="store_true")
     pr.set_defaults(func=cmd_profile)
+
+
+    cfg = sub.add_parser("config", help="统一配置管理")
+    cfg.add_argument("--list-apps", action="store_true", help="列出配置中所有应用")
+    cfg.add_argument("--show", action="store_true", help="显示完整配置（脱敏）")
+    cfg.set_defaults(func=cmd_config)
 
     return p
 

@@ -28,3 +28,6 @@ tokens/
 
 # 临时工作产物
 .tmp/
+
+# 本地配置覆盖（含真实凭据，不入库）
+config/hap-config.local.json

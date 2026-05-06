@@ -787,13 +787,13 @@ def hap_call(profile: str, tool: str, args: dict):
 
 ### 5.13 统一配置文件 `config/hap-config.json`（v1.7+）
 
-从 v1.7 起，skill 随仓库携带一个**统一配置文件** `config/hap-config.json`，将所有凭据和应用信息集中管理。智能体安装 skill 后即可**直接读取**该文件获取连接信息，无需手动管理多个 profile 文件。
+从 v1.7 起，skill 随仓库携带一个**统一配置文件** `config/hap-config.json`，集中管理所有凭据和应用信息。**智能体平台无需人工干预**，只要安装了本 skill，就可以依据本节 SOP 自主完成：配置初始化 → 首次 token 获取 → 日常 token 刷新 → 新应用发现与注册。
 
 #### 配置结构
 
 ```json
 {
-  "_readme": "说明文本",
+  "_readme": "hap-app-access 统一配置。智能体自主维护，人工仅需首次填入 account/password。",
   "personal_mcp": {
     "api_base": "https://api2.mingdao.com",
     "token": {
@@ -817,10 +817,49 @@ def hap_call(profile: str, tool: str, args: dict):
 
 #### 两种 MCP 模式
 
-| 模式 | 凭据 | 适用场景 |
-|------|------|----------|
-| `personal_mcp` | account + password → token（自动刷新） | 个人账号范围内所有可见应用 |
-| `app_mcp` | appkey + sign（每应用独立） | 单应用级独立凭据，不依赖个人账号 |
+| 模式 | 凭据 | 适用场景 | Token 管理 |
+|------|------|----------|-----------|
+| `personal_mcp` | account + password → token | 个人账号范围内所有可见应用 | **自动刷新**（过期前自动调 `md-generate-mcp-config`） |
+| `app_mcp` | appkey + sign（每应用独立） | 单应用级独立凭据 | 无需刷新（永久有效） |
+
+#### 智能体自主初始化 SOP（首次部署）
+
+智能体首次使用本 skill 时，按以下顺序自主完成配置初始化：
+
+```
+Step 1: 检查 config/hap-config.local.json 是否存在
+        ├─ 存在 → 跳到 Step 3
+        └─ 不存在 → Step 2
+
+Step 2: 从模板创建 local 配置
+        cp config/hap-config.json config/hap-config.local.json
+
+Step 3: 检查 personal_mcp.token.account 是否已填写
+        ├─ 已填写 → 跳到 Step 5
+        └─ 空 → Step 4
+
+Step 4: 获取凭据（两种来源，按优先级）
+        ├─ 环境变量 MINGDAO_ACCOUNT + MINGDAO_PASSWORD → 写入 local 配置
+        └─ 都没有 → 停下，告知用户需要提供账号密码（仅此一次）
+
+Step 5: 检查 personal_mcp.token.current_token 是否有效
+        ├─ 有效（未过期） → 初始化完成，可正常使用
+        └─ 空/过期 → 自动刷新 token（见下节）
+```
+
+#### Token 自动刷新机制
+
+`config_loader.ensure_token()` 在每次 `resolve_app()` 时自动触发：
+
+1. 读取 `personal_mcp.token.current_token` 和 `expires_at`
+2. 若 token 存在且未过期 → 直接返回（零开销）
+3. 若过期或为空 → 调用 `md-generate-mcp-config`（hap-oauth-mcp skill 提供）：
+   - 使用 `personal_mcp.token.account` + `password` 登录
+   - 获取新 token → 写回 `config/hap-config.local.json`
+   - 设置 `expires_at` = 当前时间 + 23h（留 1h buffer）
+4. 失败时抛 `TokenRefreshError`，智能体应报告错误而非静默重试
+
+**智能体无需关心 token 刷新细节**——只管调 `hap-access call --app <应用名> --tool ...`，底层自动保障 token 有效。
 
 #### CLI 使用方式
 
@@ -828,26 +867,56 @@ def hap_call(profile: str, tool: str, args: dict):
 # 列出配置中所有可用应用
 hap-access config --list-apps
 
-# 按应用名称直接调用（无需 profile 文件）
+# 按应用名称直接调用（自动处理 token 刷新）
 hap-access call --app ClawCRM --tool get_record_list --args '{"worksheet_id":"..."}'
 
-# 传统 profile 方式仍兼容
-hap-access call --profile claw-crm --tool get_record_list --args '...'
+# 查看配置状态（脱敏）
+hap-access config --show
 ```
 
-#### 配置维护规则
+#### 日常迭代：发现新应用并注册
 
-1. **git 里提交的是模板**：`config/hap-config.json` 凭据留空（account/password/appkey/sign 为空串）
-2. **本地/服务器覆盖**：复制为 `config/hap-config.local.json` 并填入真实凭据（已加入 `.gitignore`）
-3. **CLI 优先读 local**：若 `hap-config.local.json` 存在，优先使用
-4. **智能体可运行时维护**：发现新应用 / 刷新 token 后可调 `config_loader.save_config()` 写回 local
+当智能体需要访问一个**不在配置中**的应用时：
 
-#### 智能体行为准则
+1. 调 `hap-access config --list-apps` 确认目标不在列表中
+2. 走 §5.7 发现序列：`get_org_list` → `get_app_list` → 找到 app_id
+3. 将新应用追加到 `config/hap-config.local.json` 的 `personal_mcp.apps`：
+   ```bash
+   # 智能体自行读写 JSON 文件即可，无需额外工具
+   python3 -c "
+   import json
+   from pathlib import Path
+   p = Path('<skill_root>/config/hap-config.local.json')
+   cfg = json.loads(p.read_text())
+   cfg['personal_mcp']['apps'].append({
+       'org_name': '新组织', 'org_id': '...', 'app_name': '新应用', 'app_id': '...'
+   })
+   p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+   "
+   ```
+4. 后续该应用即可直接用 `--app 新应用` 访问
 
-- 首次访问 HAP 时，先读 `config/hap-config.json`（或 local）获取可用应用列表
-- 若目标应用在列表中 → 直接使用 `--app <应用名>` 调用
-- 若目标应用不在列表中 → 走发现序列（§5.7）补充，成功后写回配置
-- **禁止**跳过配置文件硬编码 appId 或凭据
+#### 配置文件层级
+
+| 文件 | 入 git | 凭据 | 用途 |
+|------|--------|------|------|
+| `config/hap-config.json` | ✅ | 留空 | 模板：定义结构 + 预填应用列表（app_name/app_id） |
+| `config/hap-config.local.json` | ❌ | 真实值 | 运行时配置：智能体自主读写 |
+
+#### 前置依赖
+
+| 依赖 | 用途 | 安装检查 |
+|------|------|---------|
+| `hap-oauth-mcp` skill | 提供 `md-generate-mcp-config`（token 刷新后端） | `which md-generate-mcp-config` 或检查 `~/.qoder/skills/hap-oauth-mcp/.venv/bin/` |
+| 账号密码（一次性） | Personal MCP 登录 | 首次由用户提供，写入 local 配置后永久可用 |
+
+#### 智能体行为准则（硬规则）
+
+1. **配置文件是唯一事实源**：所有 HAP 连接信息必须从 `config/hap-config[.local].json` 获取
+2. **禁止硬编码**：不得在代码或对话中硬编码 token/appkey/sign/appId
+3. **禁止跳过初始化**：若 local 配置不存在或凭据为空，必须先完成初始化 SOP 再执行业务
+4. **token 刷新透明化**：使用 `--app` 参数时自动刷新，智能体不需要（也不应该）手动管理 token
+5. **新应用必须注册**：发现新应用后写回配置，确保下次可直接使用
 
 ---
 

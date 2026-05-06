@@ -313,6 +313,18 @@ Personal OAuth Bearer 的访问形态有三种，本技能**只推荐第一种**
 - 每次调用必填 `ai_description`；**业务工具**（`get_record_list` 等）需加 `appId`，**元数据工具**（`get_org_list` 等）不需
 - `get_worksheet_structure` 建议传 `responseFormat="md"`，输出紧凑且含选项 key
 
+#### ⚠️ 发现序列可能失败：OAuth scope 限制
+
+Personal OAuth token 的可见范围 = 用户在 OAuth 同意页勾选的应用。对于明道云 SaaS 的**官方内置应用**（明道云知识库、任务、审批、人事等），普通用户通常**不在 token 的 scope 里**，此时：
+
+- `get_org_list` / `get_app_list` 返回 `error_code=10001`（"无权限"）或空列表
+- 这是 OAuth 协议设计，不是 token 失效，换账号/刷 token 都解决不了
+- 即使换 Appkey+Sign 也无济于事——官方应用的应用管理员是明道官方团队，外部用户**拿不到** Appkey
+
+**fallback**：跳过发现序列，直接用 §5.8「浏览器 URL 法」从 HAP Web 端地址栏取 `appId`，然后直调 `get_app_worksheets_list(appId)` / `get_app_knowledge_list(appId)`。
+
+> **智能体行为准则**：发现序列返回 10001 或空结果时，**必须停下向用户索取 appId**；禁止用其他 org 的应用 appId 套用，禁止为绕过此限制而改写 skill 文档。
+
 #### 运行时直调：Python MCP SDK
 
 当客户端（Qoder / Cursor / 自建智能体等）未集成 MCP 或不方便重启时，可用 MCP Python SDK 在临时脚本中直接调用：
@@ -620,6 +632,22 @@ hap-access profile --show claw-crm     # appkey/sign/mcp_url 字段自动脱敏
 - **不传传输层参数**：不传 `--mcp-url` / `--appkey` / `--sign` / `--api-base` / `--auth-channel`
 - **不传 MCP 注入字段**：不传 `appId` / `ai_description`（personal_mcp 由 CLI 注入；app_mcp / v3_api 不需要）
 - **换 mode 零代码修改**：同一业务 skill 换一个 profile 就能从 Personal MCP 无缝切到应用级 MCP / V3 API（前提是所用工具在目标 mode 下可映射）
+
+#### Profile 未命中场景的硬规则（智能体行为准则）
+
+当业务 skill 需要的 profile 不存在时（典型：用户问"查明道云知识库"但服务器上只有 `claw-crm` profile），智能体**必须**按以下流程处理：
+
+1. **停下任务**，告知用户缺哪个 profile，给出期望的 profile 名 + 需要的字段
+2. 请用户提供：目标应用的 `app_id`（从 HAP Web 端 URL 取，见 §5.8）+ 授权方式（`personal_mcp` / `app_mcp` / `v3_api`）+ 对应凭据或 `token_source`
+3. 引导用户运行 `hap-access profile --init <name> --mode ...`，或复制业务 skill 随包的 profile 模板
+
+**禁止的行为**：
+
+- ❌ **跨应用套用已有 profile**：用 `claw-crm` profile 去访问明道云知识库——profile 绑定特定 `app_id` / `appkey`，跨应用使用会**访问到错误的数据源且不报错**
+- ❌ **回退 skill 文档绕依赖**：为跳过 profile 缺失而修改业务 skill 的 SKILL.md（改回 env 变量路径、删 profile 要求等），这是**破坏架构**的行为
+- ❌ **猜测或硬编码 appId**：官方应用 appId 因组织而异，不得从别处推测
+
+"停下来问" 是默认、唯一、正确的姿势。
 
 ---
 
@@ -1080,7 +1108,11 @@ get_worksheet_structure(worksheet_id=ws["worksheetId"], appId=...)
 
 ---
 
-**技能版本**：v1.6
+**技能版本**：v1.6.1
 **适用范围**：明道云 HAP（SaaS / Nocoly / 私有部署）
+
+**v1.6.1 变更**（doc-only）：
+- §5.7 补「发现序列可能失败：OAuth scope 限制」——明确 `get_org_list` / `get_app_list` 10001 根因 + 浏览器 URL fallback
+- §5.11 补「Profile 未命中场景的硬规则」——智能体必须停下问用户，禁止跨应用套用 profile、禁止回退 skill 文档绕依赖
 
 **v1.6 变更**：新增 §5.11 Access Profile + §5.12 `hap-access` CLI，提供业务 skill 统一接入规范。业务 skill 从 v1.6 起应走 CLI 封装，不再自实现传输层（参考 `crm-project-review` v0.3.0）。

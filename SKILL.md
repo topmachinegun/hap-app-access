@@ -702,18 +702,34 @@ hap-access profile --show claw-crm     # appkey/sign/mcp_url 字段自动脱敏
 
 #### 子命令
 
+> **v1.7+ 推荐**：使用 `--app <应用名>` 从统一配置文件（§5.13）自动解析凭据，无需手动管理 profile 文件。`--profile` 为兼容旧模式保留。
+
 **`hap-access call`** —— 调一个工具，返回剥壳后的 `data`：
 ```bash
-hap-access call --profile claw-crm --tool get_record_list \
-  --args '{"worksheet_id":"...","pageSize":20,"pageIndex":1,"search":"华北油田"}'
+# ✅ 推荐：按应用名调用（自动从 hap-config.local.json 读取凭据 + token 自动刷新）
+hap-access call --app 产品管理 --tool get_record_list \
+  --args '{"worksheet_id":"...","pageSize":20,"pageIndex":1,"search":"水印"}'
+
+hap-access call --app ClawCRM --tool get_record_list \
+  --args '{"worksheet_id":"...","pageSize":20,"search":"华北油田"}'
+
+# 兼容：按 profile 名调用（需事先创建 profile 文件）
+hap-access call --profile claw-crm --tool get_record_list --args '...'
 ```
 
-**`hap-access list-tools`** —— 拉当前 profile 能访问的工具名列表：
+**`hap-access list-tools`** —— 拉可用工具名列表：
 ```bash
-hap-access list-tools --profile claw-crm
+hap-access list-tools --app ClawCRM          # 推荐
+hap-access list-tools --profile claw-crm     # 兼容
 ```
 
-**`hap-access profile`** —— profile 管理（见 §5.11）：
+**`hap-access config`** —— 统一配置管理（v1.7+）：
+```bash
+hap-access config --list-apps                # 列出配置中所有可用应用
+hap-access config --show                     # 显示完整配置（脱敏）
+```
+
+**`hap-access profile`** —— profile 管理（兼容旧模式，见 §5.11）：
 ```bash
 hap-access profile --list                    # 列所有（脱敏）
 hap-access profile --show <name>              # 看详情（appkey/sign 脱敏）
@@ -760,10 +776,11 @@ def resolve_hap_access_bin() -> str:
         if cand.exists(): return str(cand)
     raise HapCallError("hap-access CLI 未找到；请安装 hap-app-access skill")
 
-def hap_call(profile: str, tool: str, args: dict):
+def hap_call(app: str, tool: str, args: dict):
+    """v1.7+ 推荐：用 --app 从统一配置解析凭据（token 自动刷新）。"""
     bin_ = resolve_hap_access_bin()
     proc = subprocess.run(
-        [bin_, "call", "--profile", profile, "--tool", tool,
+        [bin_, "call", "--app", app, "--tool", tool,
          "--args", json.dumps(args, ensure_ascii=False)],
         capture_output=True, text=True, timeout=120,
     )

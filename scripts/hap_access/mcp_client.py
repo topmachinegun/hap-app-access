@@ -36,7 +36,7 @@ class MCPClient:
         url = self.profile.get("mcp_url")
         if url:
             return url
-        # personal_mcp + token_source: 从 broker 拿 token 拼 URL
+        # personal_mcp + token_source: broker 或 url 直传
         if self.mode == "personal_mcp":
             src = self.profile.get("token_source", "")
             if src.startswith("broker:"):
@@ -44,6 +44,8 @@ class MCPClient:
                 token = self._fetch_broker_token(key)
                 base = self.profile.get("api_base") or "https://api.mingdao.com"
                 return f"{base}/mcp?Authorization=Bearer%20{urllib.parse.quote(token, safe='')}"
+            if src.startswith("url:"):
+                return src.split(":", 1)[1]
         # app_mcp 也允许从 appkey+sign+api_base 拼 URL
         if self.mode == "app_mcp":
             base = self.profile.get("api_base") or "https://api.mingdao.com"
